@@ -34,6 +34,8 @@ import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
 
+import com.android.internal.util.IndentingPrintWriter;
+
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -90,6 +92,7 @@ public class DownloadInfo {
             info.mIsPublicApi = getInt(Downloads.Impl.COLUMN_IS_PUBLIC_API) != 0;
             info.mAllowedNetworkTypes = getInt(Downloads.Impl.COLUMN_ALLOWED_NETWORK_TYPES);
             info.mAllowRoaming = getInt(Downloads.Impl.COLUMN_ALLOW_ROAMING) != 0;
+            info.mAllowMetered = getInt(Downloads.Impl.COLUMN_ALLOW_METERED) != 0;
             info.mTitle = getString(Downloads.Impl.COLUMN_TITLE);
             info.mDescription = getString(Downloads.Impl.COLUMN_DESCRIPTION);
             info.mBypassRecommendedSizeLimit =
@@ -219,6 +222,7 @@ public class DownloadInfo {
     public boolean mIsPublicApi;
     public int mAllowedNetworkTypes;
     public boolean mAllowRoaming;
+    public boolean mAllowMetered;
     public String mTitle;
     public String mDescription;
     public int mBypassRecommendedSizeLimit;
@@ -349,6 +353,9 @@ public class DownloadInfo {
         }
         if (!isRoamingAllowed() && mSystemFacade.isNetworkRoaming()) {
             return NETWORK_CANNOT_USE_ROAMING;
+        }
+        if (!mAllowMetered && mSystemFacade.isActiveNetworkMetered()) {
+            return NETWORK_TYPE_DISALLOWED_BY_REQUESTOR;
         }
         return checkIsNetworkTypeAllowed(info.getType());
     }
@@ -483,29 +490,46 @@ public class DownloadInfo {
         return ContentUris.withAppendedId(Downloads.Impl.ALL_DOWNLOADS_CONTENT_URI, mId);
     }
 
-    public void dump(PrintWriter writer) {
-        writer.println("DownloadInfo:");
+    public void dump(IndentingPrintWriter pw) {
+        pw.println("DownloadInfo:");
+        pw.increaseIndent();
 
-        writer.print("  mId="); writer.print(mId);
-        writer.print(" mLastMod="); writer.print(mLastMod);
-        writer.print(" mPackage="); writer.print(mPackage);
-        writer.print(" mUid="); writer.println(mUid);
+        pw.printPair("mId", mId);
+        pw.printPair("mLastMod", mLastMod);
+        pw.printPair("mPackage", mPackage);
+        pw.printPair("mUid", mUid);
+        pw.println();
 
-        writer.print("  mUri="); writer.print(mUri);
-        writer.print(" mMimeType="); writer.print(mMimeType);
-        writer.print(" mCookies="); writer.print((mCookies != null) ? "yes" : "no");
-        writer.print(" mReferer="); writer.println((mReferer != null) ? "yes" : "no");
+        pw.printPair("mUri", mUri);
+        pw.println();
 
-        writer.print("  mUserAgent="); writer.println(mUserAgent);
+        pw.printPair("mMimeType", mMimeType);
+        pw.printPair("mCookies", (mCookies != null) ? "yes" : "no");
+        pw.printPair("mReferer", (mReferer != null) ? "yes" : "no");
+        pw.printPair("mUserAgent", mUserAgent);
+        pw.println();
 
-        writer.print("  mFileName="); writer.println(mFileName);
+        pw.printPair("mFileName", mFileName);
+        pw.printPair("mDestination", mDestination);
+        pw.println();
 
-        writer.print("  mStatus="); writer.print(mStatus);
-        writer.print(" mCurrentBytes="); writer.print(mCurrentBytes);
-        writer.print(" mTotalBytes="); writer.println(mTotalBytes);
+        pw.printPair("mStatus", Downloads.Impl.statusToString(mStatus));
+        pw.printPair("mCurrentBytes", mCurrentBytes);
+        pw.printPair("mTotalBytes", mTotalBytes);
+        pw.println();
 
-        writer.print("  mNumFailed="); writer.print(mNumFailed);
-        writer.print(" mRetryAfter="); writer.println(mRetryAfter);
+        pw.printPair("mNumFailed", mNumFailed);
+        pw.printPair("mRetryAfter", mRetryAfter);
+        pw.printPair("mETag", mETag);
+        pw.printPair("mIsPublicApi", mIsPublicApi);
+        pw.println();
+
+        pw.printPair("mAllowedNetworkTypes", mAllowedNetworkTypes);
+        pw.printPair("mAllowRoaming", mAllowRoaming);
+        pw.printPair("mAllowMetered", mAllowMetered);
+        pw.println();
+
+        pw.decreaseIndent();
     }
 
     /**

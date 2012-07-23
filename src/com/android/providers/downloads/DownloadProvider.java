@@ -38,8 +38,11 @@ import android.os.Environment;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.provider.Downloads;
+import android.provider.OpenableColumns;
+import android.text.TextUtils;
 import android.util.Log;
 
+import com.google.android.collect.Maps;
 import com.google.common.annotations.VisibleForTesting;
 
 import java.io.File;
@@ -47,11 +50,11 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-
 
 /**
  * Allows application to interact with the download manager.
@@ -60,7 +63,7 @@ public final class DownloadProvider extends ContentProvider {
     /** Database filename */
     private static final String DB_NAME = "downloads.db";
     /** Current database version */
-    private static final int DB_VERSION = 107;
+    private static final int DB_VERSION = 108;
     /** Name of table in the database */
     private static final String DB_TABLE = "downloads";
 
@@ -135,14 +138,24 @@ public final class DownloadProvider extends ContentProvider {
         Downloads.Impl.COLUMN_FILE_NAME_HINT,
         Downloads.Impl.COLUMN_MEDIAPROVIDER_URI,
         Downloads.Impl.COLUMN_DELETED,
+        OpenableColumns.DISPLAY_NAME,
+        OpenableColumns.SIZE,
     };
 
-    private static HashSet<String> sAppReadableColumnsSet;
+    private static final HashSet<String> sAppReadableColumnsSet;
+    private static final HashMap<String, String> sColumnsMap;
+
     static {
         sAppReadableColumnsSet = new HashSet<String>();
         for (int i = 0; i < sAppReadableColumnsArray.length; ++i) {
             sAppReadableColumnsSet.add(sAppReadableColumnsArray[i]);
         }
+
+        sColumnsMap = Maps.newHashMap();
+        sColumnsMap.put(OpenableColumns.DISPLAY_NAME,
+                Downloads.Impl.COLUMN_TITLE + " AS " + OpenableColumns.DISPLAY_NAME);
+        sColumnsMap.put(OpenableColumns.SIZE,
+                Downloads.Impl.COLUMN_TOTAL_BYTES + " AS " + OpenableColumns.SIZE);
     }
     private static final List<String> downloadManagerColumnsList =
             Arrays.asList(DownloadManager.UNDERLYING_COLUMNS);
@@ -295,6 +308,11 @@ public final class DownloadProvider extends ContentProvider {
                     addColumn(db, DB_TABLE, Downloads.Impl.COLUMN_ERROR_MSG, "TEXT");
                     break;
 
+                case 108:
+                    addColumn(db, DB_TABLE, Downloads.Impl.COLUMN_ALLOW_METERED,
+                            "INTEGER NOT NULL DEFAULT 1");
+                    break;
+
                 default:
                     throw new IllegalStateException("Don't know how to upgrade to " + version);
             }
@@ -440,20 +458,25 @@ public final class DownloadProvider extends ContentProvider {
     public String getType(final Uri uri) {
         int match = sURIMatcher.match(uri);
         switch (match) {
-            case MY_DOWNLOADS: {
+            case MY_DOWNLOADS:
+            case ALL_DOWNLOADS: {
                 return DOWNLOAD_LIST_TYPE;
             }
-            case MY_DOWNLOADS_ID: {
-                return DOWNLOAD_TYPE;
-            }
+            case MY_DOWNLOADS_ID:
+            case ALL_DOWNLOADS_ID:
             case PUBLIC_DOWNLOAD_ID: {
                 // return the mimetype of this id from the database
                 final String id = getDownloadIdFromUri(uri);
                 final SQLiteDatabase db = mOpenHelper.getReadableDatabase();
-                return DatabaseUtils.stringForQuery(db,
+                final String mimeType = DatabaseUtils.stringForQuery(db,
                         "SELECT " + Downloads.Impl.COLUMN_MIME_TYPE + " FROM " + DB_TABLE +
                         " WHERE " + Downloads.Impl._ID + " = ?",
                         new String[]{id});
+                if (TextUtils.isEmpty(mimeType)) {
+                    return DOWNLOAD_TYPE;
+                } else {
+                    return mimeType;
+                }
             }
             default: {
                 if (Constants.LOGV) {
@@ -617,6 +640,7 @@ public final class DownloadProvider extends ContentProvider {
         if (isPublicApi) {
             copyInteger(Downloads.Impl.COLUMN_ALLOWED_NETWORK_TYPES, values, filteredValues);
             copyBoolean(Downloads.Impl.COLUMN_ALLOW_ROAMING, values, filteredValues);
+            copyBoolean(Downloads.Impl.COLUMN_ALLOW_METERED, values, filteredValues);
         }
 
         if (Constants.LOGVV) {
@@ -752,6 +776,7 @@ public final class DownloadProvider extends ContentProvider {
         values.remove(Downloads.Impl.COLUMN_NOTIFICATION_PACKAGE); // checked later in insert()
         values.remove(Downloads.Impl.COLUMN_ALLOWED_NETWORK_TYPES);
         values.remove(Downloads.Impl.COLUMN_ALLOW_ROAMING);
+        values.remove(Downloads.Impl.COLUMN_ALLOW_METERED);
         values.remove(Downloads.Impl.COLUMN_IS_VISIBLE_IN_DOWNLOADS_UI);
         values.remove(Downloads.Impl.COLUMN_MEDIA_SCANNED);
         Iterator<Map.Entry<String, Object>> iterator = values.valueSet().iterator();
@@ -827,7 +852,7 @@ public final class DownloadProvider extends ContentProvider {
 
         if (shouldRestrictVisibility()) {
             if (projection == null) {
-                projection = sAppReadableColumnsArray;
+                projection = sAppReadableColumnsArray.clone();
             } else {
                 // check the validity of the columns in projection 
                 for (int i = 0; i < projection.length; ++i) {
@@ -836,6 +861,13 @@ public final class DownloadProvider extends ContentProvider {
                         throw new IllegalArgumentException(
                                 "column " + projection[i] + " is not allowed in queries");
                     }
+                }
+            }
+
+            for (int i = 0; i < projection.length; i++) {
+                final String newColumn = sColumnsMap.get(projection[i]);
+                if (newColumn != null) {
+                    projection[i] = newColumn;
                 }
             }
         }
@@ -1086,7 +1118,7 @@ public final class DownloadProvider extends ContentProvider {
                 != PackageManager.PERMISSION_GRANTED) {
             selection.appendClause(
                     Constants.UID + "= ? OR " + Downloads.Impl.COLUMN_OTHER_UID + "= ?",
-                    Binder.getCallingUid(), Binder.getCallingPid());
+                    Binder.getCallingUid(), Binder.getCallingUid());
         }
         return selection;
     }

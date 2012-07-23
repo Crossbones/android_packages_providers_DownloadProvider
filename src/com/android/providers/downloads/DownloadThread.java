@@ -16,10 +16,11 @@
 
 package com.android.providers.downloads;
 
-import static android.Manifest.permission.MANAGE_NETWORK_POLICY;
+import static com.android.providers.downloads.Constants.TAG;
 
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.net.INetworkPolicyListener;
 import android.net.NetworkPolicyManager;
 import android.net.Proxy;
@@ -32,6 +33,7 @@ import android.provider.Downloads;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
+import android.util.Slog;
 
 import org.apache.http.Header;
 import org.apache.http.HttpResponse;
@@ -46,7 +48,6 @@ import java.io.InputStream;
 import java.io.SyncFailedException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.Locale;
 
 /**
  * Runs an actual download
@@ -74,8 +75,6 @@ public class DownloadThread extends Thread {
      */
     private String userAgent() {
         String userAgent = mInfo.mUserAgent;
-        if (userAgent != null) {
-        }
         if (userAgent == null) {
             userAgent = Constants.DEFAULT_USER_AGENT;
         }
@@ -103,7 +102,7 @@ public class DownloadThread extends Thread {
         public long mTimeLastNotification = 0;
 
         public State(DownloadInfo info) {
-            mMimeType = sanitizeMimeType(info.mMimeType);
+            mMimeType = Intent.normalizeMimeType(info.mMimeType);
             mRequestUri = info.mUri;
             mFilename = info.mFileName;
             mTotalBytes = info.mTotalBytes;
@@ -139,7 +138,7 @@ public class DownloadThread extends Thread {
         int finalStatus = Downloads.Impl.STATUS_UNKNOWN_ERROR;
         String errorMsg = null;
 
-        final NetworkPolicyManager netPolicy = NetworkPolicyManager.getSystemService(mContext);
+        final NetworkPolicyManager netPolicy = NetworkPolicyManager.from(mContext);
         final PowerManager pm = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
 
         try {
@@ -274,8 +273,6 @@ public class DownloadThread extends Thread {
             } else if (networkUsable == DownloadInfo.NETWORK_RECOMMENDED_UNUSABLE_DUE_TO_SIZE) {
                 status = Downloads.Impl.STATUS_QUEUED_FOR_WIFI;
                 mInfo.notifyPauseDueToSize(false);
-            } else if (networkUsable == DownloadInfo.NETWORK_BLOCKED) {
-                status = Downloads.Impl.STATUS_BLOCKED;
             }
             throw new StopRequestException(status,
                     mInfo.getLogMessageForNetworkError(networkUsable));
@@ -333,6 +330,7 @@ public class DownloadThread extends Thread {
 
         closeDestination(state);
         if (state.mFilename != null && Downloads.Impl.isStatusError(finalStatus)) {
+            Slog.d(TAG, "cleanupDestination() deleting " + state.mFilename);
             new File(state.mFilename).delete();
             state.mFilename = null;
         }
@@ -619,7 +617,7 @@ public class DownloadThread extends Thread {
         if (state.mMimeType == null) {
             header = response.getFirstHeader("Content-Type");
             if (header != null) {
-                state.mMimeType = sanitizeMimeType(header.getValue());
+                state.mMimeType = Intent.normalizeMimeType(header.getValue());
             }
         }
         header = response.getFirstHeader("ETag");
@@ -810,8 +808,6 @@ public class DownloadThread extends Thread {
                 case DownloadInfo.NETWORK_UNUSABLE_DUE_TO_SIZE:
                 case DownloadInfo.NETWORK_RECOMMENDED_UNUSABLE_DUE_TO_SIZE:
                     return Downloads.Impl.STATUS_QUEUED_FOR_WIFI;
-                case DownloadInfo.NETWORK_BLOCKED:
-                    return Downloads.Impl.STATUS_BLOCKED;
                 default:
                     return Downloads.Impl.STATUS_WAITING_FOR_NETWORK;
             }
@@ -851,6 +847,8 @@ public class DownloadThread extends Thread {
                 long fileLength = f.length();
                 if (fileLength == 0) {
                     // The download hadn't actually started, we can restart from scratch
+                    Slog.d(TAG, "setupDestinationFile() found fileLength=0, deleting "
+                            + state.mFilename);
                     f.delete();
                     state.mFilename = null;
                     if (Constants.LOGV) {
@@ -859,6 +857,8 @@ public class DownloadThread extends Thread {
                     }
                 } else if (mInfo.mETag == null && !mInfo.mNoIntegrity) {
                     // This should've been caught upon failure
+                    Slog.d(TAG, "setupDestinationFile() unable to resume download, deleting "
+                            + state.mFilename);
                     f.delete();
                     throw new StopRequestException(Downloads.Impl.STATUS_CANNOT_RESUME,
                             "Trying to resume a download that can't be resumed");
@@ -955,33 +955,10 @@ public class DownloadThread extends Thread {
         mContext.getContentResolver().update(mInfo.getAllDownloadsUri(), values, null, null);
     }
 
-    /**
-     * Clean up a mimeType string so it can be used to dispatch an intent to
-     * view a downloaded asset.
-     * @param mimeType either null or one or more mime types (semi colon separated).
-     * @return null if mimeType was null. Otherwise a string which represents a
-     * single mimetype in lowercase and with surrounding whitespaces trimmed.
-     */
-    private static String sanitizeMimeType(String mimeType) {
-        try {
-            mimeType = mimeType.trim().toLowerCase(Locale.ENGLISH);
-
-            final int semicolonIndex = mimeType.indexOf(';');
-            if (semicolonIndex != -1) {
-                mimeType = mimeType.substring(0, semicolonIndex);
-            }
-            return mimeType;
-        } catch (NullPointerException npe) {
-            return null;
-        }
-    }
-
     private INetworkPolicyListener mPolicyListener = new INetworkPolicyListener.Stub() {
         @Override
         public void onUidRulesChanged(int uid, int uidRules) {
-            // only someone like NPMS should only be calling us
-            mContext.enforceCallingOrSelfPermission(MANAGE_NETWORK_POLICY, Constants.TAG);
-
+            // caller is NPMS, since we only register with them
             if (uid == mInfo.mUid) {
                 mPolicyDirty = true;
             }
@@ -989,11 +966,14 @@ public class DownloadThread extends Thread {
 
         @Override
         public void onMeteredIfacesChanged(String[] meteredIfaces) {
-            // only someone like NPMS should only be calling us
-            mContext.enforceCallingOrSelfPermission(MANAGE_NETWORK_POLICY, Constants.TAG);
+            // caller is NPMS, since we only register with them
+            mPolicyDirty = true;
+        }
 
+        @Override
+        public void onRestrictBackgroundChanged(boolean restrictBackground) {
+            // caller is NPMS, since we only register with them
             mPolicyDirty = true;
         }
     };
-
 }
